@@ -254,12 +254,52 @@ export function DriverDetailsDialog({
     return found?.name ?? prettyBranchName(a.branch_id);
   };
 
+  /** Active assignments grouped per restaurant, with branch coverage. */
+  const coverage = Object.values(
+    activeAssignments.reduce<
+      Record<
+        string,
+        { restaurantId: string; name: string; rows: DriverAssignment[] }
+      >
+    >((acc, a) => {
+      const bucket = acc[a.restaurant_id] ?? {
+        restaurantId: a.restaurant_id,
+        name: assignmentRestaurantName(a),
+        rows: [],
+      };
+      bucket.rows.push(a);
+      acc[a.restaurant_id] = bucket;
+      return acc;
+    }, {}),
+  ).map((group) => {
+    const all = branchesByRestaurant[group.restaurantId] ?? [];
+    const assignedKeys = new Set(group.rows.map((a) => normalizeBranchKey(a.branch_id)));
+    const missing = all.filter((b) => !assignedKeys.has(normalizeBranchKey(b.id)));
+    return { ...group, all, missing };
+  });
+
+  const coverMissing = async (group: (typeof coverage)[number]) => {
+    const restaurant = restaurantById[group.restaurantId];
+    await run(
+      `cover-${group.restaurantId}`,
+      () =>
+        assignDriverToAllBranches(
+          driver.id,
+          group.restaurantId,
+          group.missing,
+          restaurant?.name ?? group.name,
+        ),
+      `All branches of ${group.name} assigned`,
+    );
+  };
+
   const confirmAssign = async () => {
     if (!selectedRestaurant) return;
     const names: { restaurant_name?: string; branch_name?: string } = {};
     if (selectedRestaurant.name) names.restaurant_name = selectedRestaurant.name;
     await run("assign", async () => {
       if (branchId === ALL_BRANCHES) {
+        if (branches.length === 0) throw new Error("This restaurant has no branches yet.");
         await assignDriverToAllBranches(driver.id, selectedRestaurant.id, branches, selectedRestaurant.name);
       } else {
         const branch = branches.find((b) => b.id === branchId) ?? branches[0];

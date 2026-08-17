@@ -227,7 +227,7 @@ export function normalizeBranchKey(value: string | null | undefined): string {
   return String(value ?? "")
     .trim()
     .toLowerCase()
-    .replace(/^brn-/, "")
+    .replace(/^brn[-_]/, "")
     .replace(/^branch[-_ ]?/, "")
     .replace(/[^a-z0-9]+/g, "");
 }

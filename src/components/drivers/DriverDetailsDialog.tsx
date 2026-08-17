@@ -55,6 +55,7 @@ import {
   type DriverAssignment,
 } from "@/lib/drivers.firebase";
 import { subscribeRestaurants, type FirebaseRestaurant } from "@/lib/restaurants.firebase";
+import { subscribeAllBranches, type RestaurantBranch } from "@/lib/branches.firebase";
 
 const statusTone: Record<string, string> = {
   online: "bg-emerald-500/15 text-emerald-400 border-emerald-500/25",
@@ -84,10 +85,20 @@ function prettyBranchName(id: string | null | undefined): string {
   return cleaned.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-/** Read the real branch list from a restaurant record. Falls back to a single
- *  "Main" branch only when the restaurant genuinely has no branch data. */
-function restaurantBranches(r: FirebaseRestaurant): BranchOption[] {
-  const raw = (r as unknown as Record<string, unknown>)["branches"];
+/** Branch list for a restaurant, from the authoritative /restaurantBranches
+ *  registry. Falls back to any inline `branches` field, then to a single
+ *  "Main" branch when the restaurant genuinely has no branch data. */
+function branchOptionsFor(
+  restaurant: FirebaseRestaurant | null | undefined,
+  registry: Record<string, RestaurantBranch[]>,
+): BranchOption[] {
+  if (!restaurant) return [];
+  const fromRegistry = registry[restaurant.id] ?? [];
+  if (fromRegistry.length > 0) {
+    return fromRegistry.map((b) => ({ id: b.id, name: b.name || prettyBranchName(b.id) }));
+  }
+
+  const raw = (restaurant as unknown as Record<string, unknown>)["branches"];
 
   // Object map form: { main: { id, name }, test1: { id, name } }
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
@@ -126,27 +137,34 @@ export function DriverDetailsDialog({
 }) {
   const [assignments, setAssignments] = useState<DriverAssignment[]>([]);
   const [restaurants, setRestaurants] = useState<FirebaseRestaurant[]>([]);
+  const [branchRegistry, setBranchRegistry] = useState<Record<string, RestaurantBranch[]>>({});
   const [restaurantId, setRestaurantId] = useState("");
   const [branchId, setBranchId] = useState(ALL_BRANCHES);
   const [rejectReason, setRejectReason] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
 
+  const driverId = driver?.id ?? null;
+
   // Live assignments for this driver (active + history).
   useEffect(() => {
-    if (!open || !driver) {
+    if (!open || !driverId) {
       setAssignments([]);
       return;
     }
-    const unsub = subscribeDriverAssignmentsHistory(driver.id, setAssignments);
+    const unsub = subscribeDriverAssignmentsHistory(driverId, setAssignments);
     return unsub;
-  }, [open, driver?.id, driver]);
+  }, [open, driverId]);
 
-  // Restaurants for assignment.
+  // Restaurants + their authoritative branch registry.
   useEffect(() => {
-    if (!open || !driver) return;
-    const unsub = subscribeRestaurants(setRestaurants);
-    return unsub;
-  }, [open, driver]);
+    if (!open) return;
+    const unsubR = subscribeRestaurants(setRestaurants);
+    const unsubB = subscribeAllBranches(setBranchRegistry);
+    return () => {
+      unsubR();
+      unsubB();
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) {
@@ -158,6 +176,21 @@ export function DriverDetailsDialog({
 
   const activeAssignments = useMemo(() => assignments.filter((a) => a.is_active), [assignments]);
   const inactiveAssignments = useMemo(() => assignments.filter((a) => !a.is_active), [assignments]);
+
+  // Lookups used to resolve friendly restaurant + branch names when an assignment
+  // record is missing its denormalized names (assignments created outside this
+  // dialog, e.g. by the driver app or an older build).
+  const branchesByRestaurant = useMemo(() => {
+    const map: Record<string, BranchOption[]> = {};
+    for (const r of restaurants) map[r.id] = branchOptionsFor(r, branchRegistry);
+    return map;
+  }, [restaurants, branchRegistry]);
+
+  const restaurantById = useMemo(() => {
+    const map: Record<string, FirebaseRestaurant> = {};
+    for (const r of restaurants) map[r.id] = r;
+    return map;
+  }, [restaurants]);
 
   if (!driver) return null;
 
@@ -204,22 +237,8 @@ export function DriverDetailsDialog({
   };
 
   const selectedRestaurant = restaurants.find((r) => r.id === restaurantId) ?? null;
-  const branches = selectedRestaurant ? restaurantBranches(selectedRestaurant) : [];
+  const branches = branchOptionsFor(selectedRestaurant, branchRegistry);
 
-  // Lookup used to resolve a friendly restaurant + branch name when an assignment
-  // record is missing its denormalized names (assignments created outside this
-  // dialog, e.g. by the driver app or an older build).
-  const branchesByRestaurant = useMemo(() => {
-    const map: Record<string, BranchOption[]> = {};
-    for (const r of restaurants) map[r.id] = restaurantBranches(r);
-    return map;
-  }, [restaurants]);
-
-  const restaurantById = useMemo(() => {
-    const map: Record<string, FirebaseRestaurant> = {};
-    for (const r of restaurants) map[r.id] = r;
-    return map;
-  }, [restaurants]);
 
   const assignmentRestaurantName = (a: DriverAssignment): string => {
     if (a.restaurant_name && a.restaurant_name.trim()) return a.restaurant_name;
@@ -235,12 +254,52 @@ export function DriverDetailsDialog({
     return found?.name ?? prettyBranchName(a.branch_id);
   };
 
+  /** Active assignments grouped per restaurant, with branch coverage. */
+  const coverage = Object.values(
+    activeAssignments.reduce<
+      Record<
+        string,
+        { restaurantId: string; name: string; rows: DriverAssignment[] }
+      >
+    >((acc, a) => {
+      const bucket = acc[a.restaurant_id] ?? {
+        restaurantId: a.restaurant_id,
+        name: assignmentRestaurantName(a),
+        rows: [],
+      };
+      bucket.rows.push(a);
+      acc[a.restaurant_id] = bucket;
+      return acc;
+    }, {}),
+  ).map((group) => {
+    const all = branchesByRestaurant[group.restaurantId] ?? [];
+    const assignedKeys = new Set(group.rows.map((a) => normalizeBranchKey(a.branch_id)));
+    const missing = all.filter((b) => !assignedKeys.has(normalizeBranchKey(b.id)));
+    return { ...group, all, missing };
+  });
+
+  const coverMissing = async (group: (typeof coverage)[number]) => {
+    const restaurant = restaurantById[group.restaurantId];
+    await run(
+      `cover-${group.restaurantId}`,
+      () =>
+        assignDriverToAllBranches(
+          driver.id,
+          group.restaurantId,
+          group.missing,
+          restaurant?.name ?? group.name,
+        ),
+      `All branches of ${group.name} assigned`,
+    );
+  };
+
   const confirmAssign = async () => {
     if (!selectedRestaurant) return;
     const names: { restaurant_name?: string; branch_name?: string } = {};
     if (selectedRestaurant.name) names.restaurant_name = selectedRestaurant.name;
     await run("assign", async () => {
       if (branchId === ALL_BRANCHES) {
+        if (branches.length === 0) throw new Error("This restaurant has no branches yet.");
         await assignDriverToAllBranches(driver.id, selectedRestaurant.id, branches, selectedRestaurant.name);
       } else {
         const branch = branches.find((b) => b.id === branchId) ?? branches[0];
@@ -455,34 +514,92 @@ export function DriverDetailsDialog({
 
           {/* ---------------- Assignments ---------------- */}
           <TabsContent value="assignments" className="space-y-4 pt-4">
-            {activeAssignments.length === 0 ? (
-              <div className="rounded-lg border border-border bg-card p-6 text-center text-sm text-muted-foreground">
-                No active branch assignments. Assign this driver to a restaurant branch below.
+            {coverage.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-border bg-card/50 p-8 text-center">
+                <Building2 className="mx-auto mb-2 size-7 text-muted-foreground" />
+                <p className="text-sm font-semibold">No branch assignments yet</p>
+                <p className="mx-auto mt-1 max-w-xs text-xs text-muted-foreground">
+                  A driver can only be assigned to an order once they cover that order&apos;s
+                  restaurant <span className="font-medium">and</span> branch.
+                </p>
               </div>
             ) : (
-              <ul className="space-y-2">
-                {activeAssignments.map((a) => (
-                  <li key={a.id} className="rounded-lg border border-border bg-card flex items-center gap-3 p-3">
-                    <Store className="size-5 shrink-0 text-primary" />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold">
-                        {assignmentRestaurantName(a)}
-                      </p>
-                      <p className="truncate text-xs text-muted-foreground">
-                        {assignmentBranchName(a)}
-                      </p>
+              <ul className="space-y-3">
+                {coverage.map((group) => (
+                  <li key={group.restaurantId} className="rounded-xl border border-border bg-card">
+                    <div className="flex items-center gap-3 border-b border-border p-3">
+                      <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                        <Store className="size-4 text-primary" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-semibold">{group.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {group.rows.length} of {Math.max(group.all.length, group.rows.length)}{" "}
+                          branches covered
+                        </p>
+                      </div>
+                      {group.missing.length > 0 ? (
+                        <Badge
+                          variant="outline"
+                          className="shrink-0 border-amber-500/40 bg-amber-500/10 text-amber-400"
+                        >
+                          {group.missing.length} uncovered
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="shrink-0 border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
+                          Full coverage
+                        </Badge>
+                      )}
                     </div>
-                    {canManage && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={busy === `remove-${a.id}`}
-                        onClick={() =>
-                          run("remove-" + a.id, () => removeDriverBranch(a.id), "Branch removed")
-                        }
-                      >
-                        Remove
-                      </Button>
+
+                    <ul className="divide-y divide-border">
+                      {group.rows.map((a) => (
+                        <li key={a.id} className="flex items-center gap-3 px-3 py-2">
+                          <Building2 className="size-4 shrink-0 text-muted-foreground" />
+                          <span className="min-w-0 flex-1 truncate text-sm">
+                            {assignmentBranchName(a)}
+                          </span>
+                          {canManage && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 text-xs text-muted-foreground hover:text-destructive"
+                              disabled={busy === `remove-${a.id}`}
+                              onClick={() =>
+                                run("remove-" + a.id, () => removeDriverBranch(a.id), "Branch removed")
+                              }
+                            >
+                              {busy === `remove-${a.id}` ? (
+                                <Loader2 className="size-3.5 animate-spin" />
+                              ) : (
+                                "Remove"
+                              )}
+                            </Button>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+
+                    {group.missing.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-2 border-t border-border bg-amber-500/5 p-3">
+                        <p className="min-w-0 flex-1 text-xs text-amber-400">
+                          Not covered: {group.missing.map((b) => b.name).join(", ")} — orders from
+                          these branches cannot be assigned to this driver.
+                        </p>
+                        {canManage && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={busy === `cover-${group.restaurantId}`}
+                            onClick={() => coverMissing(group)}
+                          >
+                            {busy === `cover-${group.restaurantId}` ? (
+                              <Loader2 className="mr-2 size-3.5 animate-spin" />
+                            ) : null}
+                            Cover all branches
+                          </Button>
+                        )}
+                      </div>
                     )}
                   </li>
                 ))}

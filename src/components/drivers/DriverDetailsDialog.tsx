@@ -136,27 +136,34 @@ export function DriverDetailsDialog({
 }) {
   const [assignments, setAssignments] = useState<DriverAssignment[]>([]);
   const [restaurants, setRestaurants] = useState<FirebaseRestaurant[]>([]);
+  const [branchRegistry, setBranchRegistry] = useState<Record<string, RestaurantBranch[]>>({});
   const [restaurantId, setRestaurantId] = useState("");
   const [branchId, setBranchId] = useState(ALL_BRANCHES);
   const [rejectReason, setRejectReason] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
 
+  const driverId = driver?.id ?? null;
+
   // Live assignments for this driver (active + history).
   useEffect(() => {
-    if (!open || !driver) {
+    if (!open || !driverId) {
       setAssignments([]);
       return;
     }
-    const unsub = subscribeDriverAssignmentsHistory(driver.id, setAssignments);
+    const unsub = subscribeDriverAssignmentsHistory(driverId, setAssignments);
     return unsub;
-  }, [open, driver?.id, driver]);
+  }, [open, driverId]);
 
-  // Restaurants for assignment.
+  // Restaurants + their authoritative branch registry.
   useEffect(() => {
-    if (!open || !driver) return;
-    const unsub = subscribeRestaurants(setRestaurants);
-    return unsub;
-  }, [open, driver]);
+    if (!open) return;
+    const unsubR = subscribeRestaurants(setRestaurants);
+    const unsubB = subscribeAllBranches(setBranchRegistry);
+    return () => {
+      unsubR();
+      unsubB();
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) {
@@ -168,6 +175,21 @@ export function DriverDetailsDialog({
 
   const activeAssignments = useMemo(() => assignments.filter((a) => a.is_active), [assignments]);
   const inactiveAssignments = useMemo(() => assignments.filter((a) => !a.is_active), [assignments]);
+
+  // Lookups used to resolve friendly restaurant + branch names when an assignment
+  // record is missing its denormalized names (assignments created outside this
+  // dialog, e.g. by the driver app or an older build).
+  const branchesByRestaurant = useMemo(() => {
+    const map: Record<string, BranchOption[]> = {};
+    for (const r of restaurants) map[r.id] = branchOptionsFor(r, branchRegistry);
+    return map;
+  }, [restaurants, branchRegistry]);
+
+  const restaurantById = useMemo(() => {
+    const map: Record<string, FirebaseRestaurant> = {};
+    for (const r of restaurants) map[r.id] = r;
+    return map;
+  }, [restaurants]);
 
   if (!driver) return null;
 

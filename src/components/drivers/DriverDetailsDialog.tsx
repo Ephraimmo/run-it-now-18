@@ -514,34 +514,92 @@ export function DriverDetailsDialog({
 
           {/* ---------------- Assignments ---------------- */}
           <TabsContent value="assignments" className="space-y-4 pt-4">
-            {activeAssignments.length === 0 ? (
-              <div className="rounded-lg border border-border bg-card p-6 text-center text-sm text-muted-foreground">
-                No active branch assignments. Assign this driver to a restaurant branch below.
+            {coverage.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-border bg-card/50 p-8 text-center">
+                <Building2 className="mx-auto mb-2 size-7 text-muted-foreground" />
+                <p className="text-sm font-semibold">No branch assignments yet</p>
+                <p className="mx-auto mt-1 max-w-xs text-xs text-muted-foreground">
+                  A driver can only be assigned to an order once they cover that order&apos;s
+                  restaurant <span className="font-medium">and</span> branch.
+                </p>
               </div>
             ) : (
-              <ul className="space-y-2">
-                {activeAssignments.map((a) => (
-                  <li key={a.id} className="rounded-lg border border-border bg-card flex items-center gap-3 p-3">
-                    <Store className="size-5 shrink-0 text-primary" />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold">
-                        {assignmentRestaurantName(a)}
-                      </p>
-                      <p className="truncate text-xs text-muted-foreground">
-                        {assignmentBranchName(a)}
-                      </p>
+              <ul className="space-y-3">
+                {coverage.map((group) => (
+                  <li key={group.restaurantId} className="rounded-xl border border-border bg-card">
+                    <div className="flex items-center gap-3 border-b border-border p-3">
+                      <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                        <Store className="size-4 text-primary" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-semibold">{group.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {group.rows.length} of {Math.max(group.all.length, group.rows.length)}{" "}
+                          branches covered
+                        </p>
+                      </div>
+                      {group.missing.length > 0 ? (
+                        <Badge
+                          variant="outline"
+                          className="shrink-0 border-amber-500/40 bg-amber-500/10 text-amber-400"
+                        >
+                          {group.missing.length} uncovered
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="shrink-0 border-emerald-500/30 bg-emerald-500/10 text-emerald-400">
+                          Full coverage
+                        </Badge>
+                      )}
                     </div>
-                    {canManage && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={busy === `remove-${a.id}`}
-                        onClick={() =>
-                          run("remove-" + a.id, () => removeDriverBranch(a.id), "Branch removed")
-                        }
-                      >
-                        Remove
-                      </Button>
+
+                    <ul className="divide-y divide-border">
+                      {group.rows.map((a) => (
+                        <li key={a.id} className="flex items-center gap-3 px-3 py-2">
+                          <Building2 className="size-4 shrink-0 text-muted-foreground" />
+                          <span className="min-w-0 flex-1 truncate text-sm">
+                            {assignmentBranchName(a)}
+                          </span>
+                          {canManage && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 text-xs text-muted-foreground hover:text-destructive"
+                              disabled={busy === `remove-${a.id}`}
+                              onClick={() =>
+                                run("remove-" + a.id, () => removeDriverBranch(a.id), "Branch removed")
+                              }
+                            >
+                              {busy === `remove-${a.id}` ? (
+                                <Loader2 className="size-3.5 animate-spin" />
+                              ) : (
+                                "Remove"
+                              )}
+                            </Button>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+
+                    {group.missing.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-2 border-t border-border bg-amber-500/5 p-3">
+                        <p className="min-w-0 flex-1 text-xs text-amber-400">
+                          Not covered: {group.missing.map((b) => b.name).join(", ")} — orders from
+                          these branches cannot be assigned to this driver.
+                        </p>
+                        {canManage && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={busy === `cover-${group.restaurantId}`}
+                            onClick={() => coverMissing(group)}
+                          >
+                            {busy === `cover-${group.restaurantId}` ? (
+                              <Loader2 className="mr-2 size-3.5 animate-spin" />
+                            ) : null}
+                            Cover all branches
+                          </Button>
+                        )}
+                      </div>
                     )}
                   </li>
                 ))}

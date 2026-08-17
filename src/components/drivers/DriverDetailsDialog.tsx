@@ -214,22 +214,8 @@ export function DriverDetailsDialog({
   };
 
   const selectedRestaurant = restaurants.find((r) => r.id === restaurantId) ?? null;
-  const branches = selectedRestaurant ? restaurantBranches(selectedRestaurant) : [];
+  const branches = branchOptionsFor(selectedRestaurant, branchRegistry);
 
-  // Lookup used to resolve a friendly restaurant + branch name when an assignment
-  // record is missing its denormalized names (assignments created outside this
-  // dialog, e.g. by the driver app or an older build).
-  const branchesByRestaurant = useMemo(() => {
-    const map: Record<string, BranchOption[]> = {};
-    for (const r of restaurants) map[r.id] = restaurantBranches(r);
-    return map;
-  }, [restaurants]);
-
-  const restaurantById = useMemo(() => {
-    const map: Record<string, FirebaseRestaurant> = {};
-    for (const r of restaurants) map[r.id] = r;
-    return map;
-  }, [restaurants]);
 
   const assignmentRestaurantName = (a: DriverAssignment): string => {
     if (a.restaurant_name && a.restaurant_name.trim()) return a.restaurant_name;

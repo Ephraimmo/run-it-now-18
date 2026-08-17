@@ -84,10 +84,20 @@ function prettyBranchName(id: string | null | undefined): string {
   return cleaned.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-/** Read the real branch list from a restaurant record. Falls back to a single
- *  "Main" branch only when the restaurant genuinely has no branch data. */
-function restaurantBranches(r: FirebaseRestaurant): BranchOption[] {
-  const raw = (r as unknown as Record<string, unknown>)["branches"];
+/** Branch list for a restaurant, from the authoritative /restaurantBranches
+ *  registry. Falls back to any inline `branches` field, then to a single
+ *  "Main" branch when the restaurant genuinely has no branch data. */
+function branchOptionsFor(
+  restaurant: FirebaseRestaurant | null | undefined,
+  registry: Record<string, RestaurantBranch[]>,
+): BranchOption[] {
+  if (!restaurant) return [];
+  const fromRegistry = registry[restaurant.id] ?? [];
+  if (fromRegistry.length > 0) {
+    return fromRegistry.map((b) => ({ id: b.id, name: b.name || prettyBranchName(b.id) }));
+  }
+
+  const raw = (restaurant as unknown as Record<string, unknown>)["branches"];
 
   // Object map form: { main: { id, name }, test1: { id, name } }
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {

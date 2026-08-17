@@ -602,13 +602,17 @@ function eligibilityHint(
   drivers: DriverRow[],
   activeAssignments: DriverAssignment[],
 ): string {
-  const approved = drivers.filter((d) => isApprovedDriver(d)).length;
-  const assignedToRestaurant = drivers.filter(
-    (d) =>
-      isApprovedDriver(d) &&
-      hasActiveAssignment(activeAssignments, d.id, order.restaurant_id, null),
-  ).length;
-  return `No eligible driver — ${approved} approved · ${assignedToRestaurant} assigned to this restaurant`;
+  const approved = drivers.filter((d) => isApprovedDriver(d));
+  const atRestaurant = approved.filter((d) =>
+    hasActiveAssignment(activeAssignments, d.id, order.restaurant_id, null),
+  );
+  if (approved.length === 0) {
+    return "No approved drivers yet — approve a driver in Drivers → driver profile.";
+  }
+  if (atRestaurant.length === 0) {
+    return `${approved.length} approved driver(s), but none is assigned to ${order.restaurant_name}. Assign one in Drivers → Assignments.`;
+  }
+  return `${atRestaurant.length} driver(s) cover ${order.restaurant_name}, but none covers this order's branch (${order.branch_name ?? order.branch_id ?? "unknown"}). Open the driver in Drivers → Assignments and use "Cover all branches".`;
 }
 
 function OrdersTable({

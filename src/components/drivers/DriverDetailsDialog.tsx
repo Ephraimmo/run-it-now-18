@@ -55,6 +55,7 @@ import {
   type DriverAssignment,
 } from "@/lib/drivers.firebase";
 import { subscribeRestaurants, type FirebaseRestaurant } from "@/lib/restaurants.firebase";
+import { subscribeAllBranches, type RestaurantBranch } from "@/lib/branches.firebase";
 
 const statusTone: Record<string, string> = {
   online: "bg-emerald-500/15 text-emerald-400 border-emerald-500/25",
